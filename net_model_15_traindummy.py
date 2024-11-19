@@ -166,7 +166,7 @@ while True:
         data['std_btc'] = calculate_rolling_std_high_low(data['high_btc'], data['low_btc'])
 
         # Compute for correlation between sol and btc
-        data['total_sol_diff_close'] = data['close_total'] - data['close_sol']
+        data['correlation_sol_btc'] = calculate_rolling_correlation(data['close_sol'], data['close_btc'])
 
         data.dropna(inplace=True)
 
@@ -176,13 +176,25 @@ while True:
             'low_symbolused': data['low_symbolused'],
             'open_symbolused': data['open_symbolused'],
             'symbolused_slope': data['symbolused_slope'],
+            'sol_slope': data['sol_slope'],
+            'total_slope': data['total_slope'],
+            'btc_slope': data['btc_slope'],
             'std_symbolused': data['std_symbolused'],
+            'std_total': data['std_total'],
+            'std_btc': data['std_btc'],
+            'std_sol': data['std_sol'],
             'price_ratio_symbolused': data['price_ratio_symbolused'],
+            'price_ratio_total': data['price_ratio_total'],
+            'price_ratio_sol': data['price_ratio_sol'],
+            'price_ratio_btc': data['price_ratio_btc'],
             'ema5': data['ema5'],
             'ema8': data['ema8'],
             'ema100': data['ema100'],
+            'close_sol': data['close_sol'],
+            'close_total': data['close_total'],
+            'close_btc': data['close_btc'],
             'rsi14_symbolused': data['rsi14_symbolused'],
-            'total_sol_diff_close': data['total_sol_diff_close']
+            'correlation_sol_btc': data['correlation_sol_btc']
         })
 
         # Split data into two halves for training and testing
@@ -213,6 +225,12 @@ while True:
                 self.ema5 = data['ema5'].values
                 self.ema8 = data['ema8'].values
                 self.ema100 = data['ema100'].values
+                self.slope_symbolused = data['symbolused_slope'].values
+                self.slope_total = data['total_slope'].values
+                self.slope_btc = data['btc_slope'].values
+                self.correlation_btc_sol = data['correlation_sol_btc'].values
+                self.rsi14_symbolused = data['rsi14_symbolused'].values
+
 
             def reset(self):
                 self.balance = 20
@@ -278,8 +296,7 @@ while True:
                     if price > self.entry[0] and self.side[0] == 1:
                         self.winloss.append(1)
                         pct = abs((price - self.entry[0]) / self.entry[0])
-                        self.profits.append(
-                            (self.amount[0] * self.leverage[0] * pct) - (self.amount[0] * self.leverage[0] * 0.0005))
+                        self.profits.append((self.amount[0] * self.leverage[0] * pct) - (self.amount[0] * self.leverage[0] * 0.0005))
                         self.entry.clear()
                         self.take_profit.clear()
                         self.stop_loss.clear()
@@ -290,8 +307,7 @@ while True:
                     elif price < self.entry[0] and self.side[0] == 1:
                         self.winloss.append(-1)
                         pct = abs((price - self.entry[0]) / self.entry[0])
-                        self.profits.append(
-                            -(self.amount[0] * self.leverage[0] * pct) - (self.amount[0] * self.leverage[0] * 0.0005))
+                        self.profits.append(-(self.amount[0] * self.leverage[0] * pct) - (self.amount[0] * self.leverage[0] * 0.0005))
                         self.entry.clear()
                         self.take_profit.clear()
                         self.stop_loss.clear()
@@ -351,14 +367,13 @@ while True:
                 else:
                     self.action_list.append(0)
 
-
                 self.current_step += step
                 self.equity_history.append(self.balance)
                 done = self.current_step >= len(self.data) - 1
                 return self.balance, done, self.winloss, sum(self.profits), self.action_list
 
 
-        def run_neat(config_path, save_path="best_genome3.pkl", generations=999999999):
+        def run_neat(config_path, save_path="best_genome3.pkl", generations=999999999999):
             """
             Runs the NEAT algorithm with a fitness function and saves the best genome.
 
@@ -384,15 +399,16 @@ while True:
 
             # Define fitness function for NEAT
             def evaluate_genomes(genomes, config):
-                nonlocal best_genome, best_net, best_total_profits2, best_fitness  # Use outer-scope variables
+                nonlocal best_genome, best_net  # Use outer-scope variables
                 best_fitness = float('-inf')
-                best_total_profits2 = float('-inf')
+                best_test = float('-inf')
 
+                saved_best_fitness = 0
+                saved_test_fitness = 0
                 for genome_id, genome in genomes:
                     genome.fitness = 0.0  # Initialize fitness
-                    best_fit = 0
-                    best_total_prof2 = 0
 
+                    # try:
                     # Create the neural network for the genome
                     net = neat.nn.RecurrentNetwork.create(genome, config)
                     env = TradingEnvironment(first_half)  # Assumes `data_inputs` is defined globally or passed in
@@ -403,17 +419,54 @@ while True:
 
                     total_profit = 0
                     while True:
-                        def diff():
-                            if len(env.side) > 0:
+                        def min_max_scale():
+                            distance1 = 0
+                            distance2 = 0
+                            if len(env.side)>0:
                                 if env.side[0] == 1:
-                                    difference = abs(env.low_price[env.current_step] - env.stop_loss[0])/env.stop_loss[0]
+                                    if env.low_price[env.current_step] <= env.stop_loss[0] and env.high_price[env.current_step] > env.stop_loss[0]:
+                                        distance1 = 0
+                                        distance2 = (env.high_price[env.current_step] - env.stop_loss[0]) / (env.take_profit[0] - env.stop_loss[0])
+                                    elif env.low_price[env.current_step] <= env.stop_loss[0] and env.high_price[env.current_step] <= env.stop_loss[0]:
+                                        distance1 = 0
+                                        distance2 = 0
+                                    elif env.high_price[env.current_step] >= env.take_profit[0] and env.low_price[env.current_step] < env.take_profit[0]:
+                                        distance1 = (env.low_price[env.current_step] - env.stop_loss[0]) / (env.take_profit[0] - env.stop_loss[0])
+                                        distance2 = 1
+                                    elif env.high_price[env.current_step] >= env.take_profit[0] and env.low_price[env.current_step] >= env.take_profit[0]:
+                                        distance1 = 1
+                                        distance2 = 1
+
                                 elif env.side[0] == -1:
-                                    difference = abs(env.high_price[env.current_step] - env.stop_loss[0])/env.stop_loss[0]
+                                    if env.high_price[env.current_step] >= env.stop_loss[0] and env.low_price[env.current_step] < env.stop_loss[0]:
+                                        distance1 = (env.low_price[env.current_step] - env.take_profit[0]) / (env.stop_loss[0] - env.take_profit[0])
+                                        distance2 = 1
+                                    elif env.high_price[env.current_step] >= env.stop_loss[0] and env.low_price[env.current_step] >= env.stop_loss[0]:
+                                        distance1 = 1
+                                        distance2 = 1
+                                    elif env.low_price[env.current_step] <= env.take_profit[0] and env.high_price[env.current_step] > env.take_profit[0]:
+                                        distance1 = 0
+                                        distance2 = (env.high_price[env.current_step] - env.take_profit[0]) / (env.stop_loss[0] - env.take_profit[0])
+                                    elif env.low_price[env.current_step] <= env.take_profit[0] and env.high_price[env.current_step] <= env.take_profit[0]:
+                                        distance1 = 0
+                                        distance2 = 0
                             else:
-                                difference = 0
-                            return difference
+                                distance1 = 0
+                                distance2 = 0
+                            return distance1, distance2
+
+                        def signal():
+                            if env.ema5[env.current_step -1] < env.ema8[env.current_step -1] and env.ema5[env.current_step] > env.ema8[env.current_step] and env.close_price[env.current_step] > env.open_price[env.current_step] and env.close_price[env.current_step] > env.ema100[env.current_step] and env.close_price[env.current_step - 1] < env.ema100[env.current_step-1]:
+                                signal = 1
+                            elif env.ema5[env.current_step -1] > env.ema8[env.current_step -1] and env.ema5[env.current_step] < env.ema8[env.current_step] and env.close_price[env.current_step] < env.open_price[env.current_step] and env.close_price[env.current_step] < env.ema100[env.current_step] and env.close_price[env.current_step - 1] > env.ema100[env.current_step-1]:
+                                signal = -1
+                            else:
+                                signal = 0
+                            return signal
+
+                        distance1, distance2 = min_max_scale()
                         # Ensure state is compatible with neural network input size
-                        state = np.concatenate([env.data.iloc[env.current_step, :12].values, [diff()]])
+                        state = np.concatenate([[env.slope_symbolused[env.current_step]], [env.rsi14_symbolused[env.current_step]], [distance1], [distance2], [signal()]])
                         action = np.argmax(net.activate(state)) - 1  # Map to -1, 0, 1
 
                         # Execute the action in the environment
@@ -421,18 +474,56 @@ while True:
                         if done:
                             break
 
+
                     while True:
-                        def diff2():
-                            if len(env2.side) > 0:
+                        def min_max_scale():
+                            distance1 = 0
+                            distance2 = 0
+                            if len(env2.side)>0:
                                 if env2.side[0] == 1:
-                                    difference = abs(env2.low_price[env2.current_step] - env2.stop_loss[0])/env2.stop_loss[0]
+                                    if env2.low_price[env2.current_step] <= env2.stop_loss[0] and env2.high_price[env2.current_step] > env2.stop_loss[0]:
+                                        distance1 = 0
+                                        distance2 = (env2.high_price[env2.current_step] - env2.stop_loss[0]) / (env2.take_profit[0] - env2.stop_loss[0])
+                                    elif env2.low_price[env2.current_step] <= env2.stop_loss[0] and env2.high_price[env2.current_step] <= env2.stop_loss[0]:
+                                        distance1 = 0
+                                        distance2 = 0
+                                    elif env2.high_price[env2.current_step] >= env2.take_profit[0] and env2.low_price[env2.current_step] < env2.take_profit[0]:
+                                        distance1 = (env2.low_price[env2.current_step] - env2.stop_loss[0]) / (env2.take_profit[0] - env2.stop_loss[0])
+                                        distance2 = 1
+                                    elif env2.high_price[env2.current_step] >= env2.take_profit[0] and env2.low_price[env2.current_step] >= env2.take_profit[0]:
+                                        distance1 = 1
+                                        distance2 = 1
+
                                 elif env2.side[0] == -1:
-                                    difference = abs(env2.high_price[env2.current_step] - env2.stop_loss[0])/env2.stop_loss[0]
+                                    if env2.high_price[env2.current_step] >= env2.stop_loss[0] and env2.low_price[env2.current_step] < env2.stop_loss[0]:
+                                        distance1 = (env2.low_price[env2.current_step] - env2.take_profit[0]) / (env2.stop_loss[0] - env2.take_profit[0])
+                                        distance2 = 1
+                                    elif env2.high_price[env2.current_step] >= env2.stop_loss[0] and env2.low_price[env2.current_step] >= env2.stop_loss[0]:
+                                        distance1 = 1
+                                        distance2 = 1
+                                    elif env2.low_price[env2.current_step] <= env2.take_profit[0] and env2.high_price[env2.current_step] > env2.take_profit[0]:
+                                        distance1 = 0
+                                        distance2 = (env2.high_price[env2.current_step] - env2.take_profit[0]) / (env2.stop_loss[0] - env2.take_profit[0])
+                                    elif env2.low_price[env2.current_step] <= env2.take_profit[0] and env2.high_price[env2.current_step] <= env2.take_profit[0]:
+                                        distance1 = 0
+                                        distance2 = 0
                             else:
-                                difference = 0
-                            return difference
+                                distance1 = 0
+                                distance2 = 0
+                            return distance1, distance2
+
+                        def signal2():
+                            if env2.ema5[env2.current_step -1] < env2.ema8[env2.current_step -1] and env2.ema5[env2.current_step] > env2.ema8[env2.current_step] and env2.close_price[env2.current_step] > env2.open_price[env2.current_step] and env2.close_price[env2.current_step] > env2.ema100[env2.current_step] and env2.close_price[env2.current_step - 1] < env2.ema100[env2.current_step-1]:
+                                signal = 1
+                            elif env2.ema5[env2.current_step -1] > env2.ema8[env2.current_step -1] and env2.ema5[env2.current_step] < env2.ema8[env2.current_step] and env2.close_price[env2.current_step] < env2.open_price[env2.current_step] and env2.close_price[env2.current_step] < env2.ema100[env2.current_step] and env2.close_price[env2.current_step - 1] > env2.ema100[env2.current_step-1]:
+                                signal = -1
+                            else:
+                                signal = 0
+                            return signal
+
+                        distance21, distance22 = min_max_scale()
                         # Ensure state is compatible with neural network input size
-                        state2 = np.concatenate([env2.data.iloc[env2.current_step, :12].values, [diff2()]])
+                        state2 = np.concatenate([[env2.slope_symbolused[env2.current_step]], [env2.rsi14_symbolused[env2.current_step]], [distance21], [distance22], [signal2()]])
                         action2 = np.argmax(net.activate(state2)) - 1  # Map to -1, 0, 1
 
                         # Execute the action in the environment
@@ -440,50 +531,53 @@ while True:
                         if done:
                             break
 
+                    profit = balance
                     total_profit = total_profits
-                    total_profit2 = total_profits2
+                    win = winloss.count(1)
+                    loss = winloss.count(-1)
                     PNL = (total_profit - 20) * 100 / 20
-                    PNL2 = (total_profit2 - 20) * 100 / 20
+                    PNL2 = (total_profits2 - 20) * 100 / 20
+                    winrate = win / len(winloss) if len(winloss) > 0 else 0
 
-
-                    if best_fitness>20 and total_profit2<20:
-                        genome.fitness = 20
-                    elif best_fitness>40 and total_profits2<30:
-                        genome.fitness = 20
-                    elif best_fitness>60 and total_profits2<40:
-                        genome.fitness = 20
+                    if total_profits>20 and total_profits2<20:
+                        genome.fitness = 0
                     else:
                         genome.fitness = max(total_profit, 0)
 
+                    if total_profits2<best_test:
+                        genome.fitness = 0
+                    else:
+                        genome.fitness = max(total_profit, 0)
 
                     # Print genome performance
-                    print(f'Trader: {genome_id}, PNL%_Train: {round(PNL, 2)}%, PNL%_Test: {round(PNL2, 2)}%')
-
+                    print(f'Trader: {genome_id}, PNL%: {round(PNL, 2)}%, PNL2%: {round(PNL2, 2)}%')
+                    print(f'Saved Best Fitness: {saved_best_fitness}, Saved Test Fitness: {saved_test_fitness}')
                     # Track the best genome
                     if genome.fitness > best_fitness:
                         best_fitness = genome.fitness
+                        best_test = total_profits2
                         best_genome = genome
-                        best_total_profits2 = total_profits2
                         best_net = net
 
                     # Save the best genome and network after evaluations
-                    if best_genome and best_total_profits2 > 40 and best_fitness > 60:
-                        best_fit = best_fitness
-                        best_total_prof2 = best_total_profits2
+                    if best_genome and genome.fitness>30 and total_profits2>40:
+                        saved_best_fitness = genome.fitness
+                        saved_test_fitness = total_profits2
                         with open(save_path, 'wb') as f:
                             pickle.dump({'genome': best_genome, 'network': best_net}, f)
                         print(f"Saved the best genome and network to {save_path}")
-
-                    print(f'Recent Saved Genome: (Best Fitness: {best_fit}), (Best Fitness on Test: {best_total_prof2}')
+                    # except Exception as e:
+                    #    print(f"Error evaluating genome {genome_id}: {e}")
+                    #    genome.fitness = 0  # Avoid NoneType fitness
 
             # Initialize variables for the best genome and network
             best_genome = None
             best_net = None
-            best_total_profits2 = 0
-            best_fitness = 0
 
             # Run the NEAT algorithm
             p.run(evaluate_genomes, generations)
+
+
 
             print('\nBest genome:\n{!s}'.format(best_genome))
 
@@ -544,7 +638,7 @@ while True:
 
             # Node parameters
             num_hidden = 0
-            num_inputs = 13
+            num_inputs = 5
             num_outputs = 3
 
             # Connection mutation
@@ -587,16 +681,7 @@ while True:
 
             total_profit = 0  # Variable to accumulate profit during testing
             while True:
-                def diff():
-                    if len(env.side) > 0:
-                        if env.side[0] == 1:
-                            difference = abs(env.low_price[env.current_step] - env.stop_loss[0]) / env.stop_loss[0]
-                        elif env.side[0] == -1:
-                            difference = abs(env.high_price[env.current_step] - env.stop_loss[0]) / env.stop_loss[0]
-                    else:
-                        difference = 0
-                    return difference
-                state = np.concatenate([env.data.iloc[env.current_step, :12].values, [diff()]])  # Get the current state from the environment
+                state = env.data.iloc[env.current_step, :24].values  # Get the current state from the environment
                 action = np.argmax(net.activate(state)) - 1  # Choose action from the neural network
                 balance, done, winloss, total_profit, action_list = env.step(
                     action)  # Step the environment with the chosen action
